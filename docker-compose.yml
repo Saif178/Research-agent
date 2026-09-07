@@ -1,0 +1,16 @@
+services:
+  chroma:
+    image: chromadb/chroma:latest
+    ports: ["8000:8000"]
+    volumes: ["chroma_data:/data"]
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: financial_rag
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports: ["5432:5432"]
+    volumes: ["pg_data:/var/lib/postgresql/data"]
+volumes:
+  chroma_data:
+  pg_data:

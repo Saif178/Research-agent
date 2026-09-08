@@ -3,7 +3,12 @@ import os
 from dotenv import load_dotenv
 import streamlit as st
 
+# Keep local .env support, then overlay Streamlit Cloud/local secrets through
+# the unified configuration layer. Retrieval, calculations, fallback data and
+# Research Trace are intentionally untouched.
 load_dotenv(Path(__file__).resolve().parent / '.env', override=False)
+from config import load_runtime_environment, provider_status, secret_fingerprint, is_streamlit_cloud
+load_runtime_environment()
 
 from project_paths import FINANCIALS_DIR
 
@@ -15,13 +20,10 @@ def _safe_dataframe(rows):
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows).copy()
-    # Streamlit/Arrow cannot serialize object columns containing mixed scalars
-    # such as integers plus strings (e.g. step=1 and step='fallback').
     for col in df.columns:
         if df[col].dtype == 'object':
             df[col] = df[col].map(lambda v: '' if v is None else str(v))
         elif str(df[col].dtype).startswith(('int', 'float', 'bool')):
-            # Keep homogeneous numeric columns numeric.
             continue
         else:
             df[col] = df[col].astype(str)
@@ -31,26 +33,68 @@ st.title('Financial Research')
 st.caption('Website/API-first financial research with deterministic calculations and grounded synthesis')
 
 @st.cache_resource(show_spinner=False)
-def get_engine(max_steps):
+def get_engine(max_steps, _provider_cache_key):
     from core.research import ResearchEngine
     from core.web_search import TavilySearch
-    # Prefer OpenAI for synthesis when configured; otherwise use Ollama.
-    if os.getenv('OPENAI_API_KEY'):
+
+    load_runtime_environment()
+    openai_key = os.getenv('OPENAI_API_KEY')
+
+    # OpenAI is the preferred synthesis provider when configured. On Cloud,
+    # never silently assume the user's Windows localhost Ollama is reachable.
+    if openai_key:
         from llm.openai_client import OpenAIClient
         llm = OpenAIClient()
+        provider = 'OpenAI'
     else:
-        from llm.ollama_client import OllamaClient
-        llm = OllamaClient()
-    return ResearchEngine(llm=llm, vector=None, graph=None, web_search=TavilySearch(), max_steps=max_steps)
+        cloud = is_streamlit_cloud()
+        explicit_ollama = bool(os.getenv('OLLAMA_BASE_URL') or os.getenv('OLLAMA_MODEL'))
+        if not cloud or explicit_ollama:
+            try:
+                from llm.ollama_client import OllamaClient
+                llm = OllamaClient()
+                ok, _ = llm.health()
+                if not ok:
+                    raise RuntimeError('Ollama is not reachable or has no usable model.')
+                provider = 'Ollama'
+            except Exception:
+                llm = _EvidenceOnlyLLM()
+                provider = 'Evidence-only'
+        else:
+            llm = _EvidenceOnlyLLM()
+            provider = 'Evidence-only'
 
+    engine = ResearchEngine(llm=llm, vector=None, graph=None,
+                            web_search=TavilySearch(), max_steps=max_steps)
+    engine.synthesis_provider = provider
+    return engine
+
+class _EvidenceOnlyLLM:
+    def complete(self, prompt, system=None):
+        raise RuntimeError('No remote synthesis provider is configured/reachable. Evidence-only mode is active.')
+
+status = provider_status()
 with st.sidebar:
     st.header('System Health')
     st.success('Research source: Website / financial APIs')
     st.info('Uploaded annual reports and ChromaDB are NOT used for research.')
+    st.write('**Deployment**')
+    st.success('Streamlit Cloud' if status['cloud'] else 'Local / self-hosted')
     st.write('**OpenAI synthesis**')
-    st.success('Configured' if os.getenv('OPENAI_API_KEY') else 'Not configured — Ollama will be used')
+    st.success('Configured' if status['openai'] else 'Not configured')
     st.write('**Tavily web search**')
-    st.success('Configured' if os.getenv('TAVILY_API_KEY') else 'Not configured')
+    st.success('Configured' if status['tavily'] else 'Not configured')
+    st.write('**Alpha Vantage financial API**')
+    st.success('Configured' if status['alphavantage'] else 'Not configured')
+    st.write('**Synthesis fallback**')
+    if status['openai']:
+        st.success('OpenAI')
+    elif not status['cloud']:
+        st.info('Local Ollama → evidence-only if unavailable')
+    elif status['ollama_configured']:
+        st.info('Configured Ollama endpoint → evidence-only if unavailable')
+    else:
+        st.info('Evidence-only on Cloud until OpenAI or a reachable Ollama endpoint is configured')
     st.write('**Financial dataset fallback**')
     st.success(str(FINANCIALS_DIR))
 
@@ -60,11 +104,11 @@ with research_tab:
     depth=st.slider('Maximum web research steps',3,12,6)
     if q and st.button('Run Website Research',type='primary'):
         try:
-            engine=get_engine(depth)
-            with st.status('Researching websites and calculating metrics...',expanded=True) as status:
+            engine=get_engine(depth, secret_fingerprint())
+            with st.status('Researching websites and calculating metrics...',expanded=True) as status_box:
                 plan=engine.plan(q)
                 result=engine.run(q, plan, progress=lambda s,x: st.write(f'Step {s}: {x}'))
-                status.update(label='Research complete',state='complete')
+                status_box.update(label='Research complete',state='complete')
             st.session_state.report=result['report']
             st.session_state.trace=result.get('actions',[])
             st.session_state.sources=result.get('sources',[])
@@ -86,18 +130,10 @@ with data_tab:
         else: st.info('No matching financial dataset evidence found.')
 
 with trace_tab:
-
     st.subheader("Research Trace")
-
     trace = st.session_state.get("trace", [])
-
     if not trace:
         st.info("Run a website research query to populate the trace.")
     else:
         trace_df = _safe_dataframe(trace)
-
-        st.dataframe(
-            trace_df,
-            width="stretch",
-            hide_index=True
-        )
+        st.dataframe(trace_df, width="stretch", hide_index=True)

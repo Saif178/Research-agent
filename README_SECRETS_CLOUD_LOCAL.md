@@ -1,10 +1,18 @@
-# Secrets and Cloud/Local Provider Selection
+# Secrets: Streamlit Cloud and Local Development
 
-This patch adds a single configuration layer without changing the website-first retrieval flow, financial dataset fallback, deterministic calculations, or Research Trace.
+The application now uses **`st.secrets` as the single source of truth for secrets**.
+The local `.env` file is retained only as a non-Cloud fallback for developers who do
+not use `.streamlit/secrets.toml`.
 
-## Streamlit Community Cloud
+## Local development — recommended
 
-In the app's **Settings → Secrets**, use either root-level keys:
+Create:
+
+```text
+.streamlit/secrets.toml
+```
+
+using:
 
 ```toml
 OPENAI_API_KEY = "..."
@@ -13,36 +21,40 @@ ALPHAVANTAGE_API_KEY = "..."
 OPENAI_MODEL = "gpt-4o-mini"
 ```
 
-or the supported sectioned form:
+The application reads these values through `st.secrets`.
+
+If a local `st.secrets` value is absent, the application may fall back to `.env`.
+`.env` is never used as a Cloud fallback.
+
+## Streamlit Community Cloud
+
+Open the deployed app's **Manage app / Settings → Secrets** and paste the same
+root-level TOML:
 
 ```toml
-[openai]
-api_key = "..."
-
-[tavily]
-api_key = "..."
-
-[alphavantage]
-api_key = "..."
+OPENAI_API_KEY = "..."
+TAVILY_API_KEY = "..."
+ALPHAVANTAGE_API_KEY = "..."
+OPENAI_MODEL = "gpt-4o-mini"
 ```
 
-Root-level values take precedence over process environment values. The app resolves `st.secrets` first and mirrors resolved settings into the existing environment-based clients, so the research engine itself does not need to be rewritten.
+The app reads these values through `st.secrets`. No `.env` file is required or
+expected on Cloud.
 
-After changing Cloud Secrets, restart/redeploy the app if the running instance has not picked up the new values.
+## Provider selection
 
-## Local development
+1. OpenAI when `OPENAI_API_KEY` is configured in `st.secrets`.
+2. On local/self-hosted execution only, Ollama may be used when OpenAI is absent
+   and Ollama is reachable/configured.
+3. On Cloud, localhost Ollama is never assumed. A reachable remote Ollama endpoint
+   must be explicitly configured.
+4. If no synthesis provider is available, the application remains in evidence-only
+   mode.
 
-Use `.env` (never commit it) or normal environment variables. `.env.example` shows the expected names.
-
-Provider selection is:
-
-1. **OpenAI** when `OPENAI_API_KEY` is available.
-2. **Ollama** locally when OpenAI is not configured and a reachable Ollama service/model is available.
-3. **Evidence-only** when no synthesis provider is available.
-4. On Streamlit Cloud, localhost Ollama is **not assumed**. A remote Ollama endpoint is used only when `OLLAMA_BASE_URL` or `OLLAMA_MODEL` is explicitly configured.
-
-Tavily and Alpha Vantage are independently detected; they do not control the synthesis-provider choice.
+Tavily and Alpha Vantage are independently detected and do not determine the
+synthesis-provider choice.
 
 ## Security
 
-The distribution no longer contains live API credentials in `.env`. If credentials that were present in an earlier package were real, rotate/revoke them before further use because they have been exposed in the package history.
+Do **not** commit `.streamlit/secrets.toml` or `.env`.
+The repository contains only `.streamlit/secrets.toml.example` as a template.

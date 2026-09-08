@@ -1,13 +1,9 @@
-from pathlib import Path
 import os
-from dotenv import load_dotenv
 import streamlit as st
 
-# Keep local .env support, then overlay Streamlit Cloud/local secrets through
-# the unified configuration layer. Retrieval, calculations, fallback data and
-# Research Trace are intentionally untouched.
-load_dotenv(Path(__file__).resolve().parent / '.env', override=False)
-from config import load_runtime_environment, provider_status, secret_fingerprint, is_streamlit_cloud
+# Secret loading/provider selection only. Retrieval, calculations, fallback data
+# and Research Trace are intentionally untouched.
+from config import load_runtime_environment, provider_status, secret_fingerprint, is_streamlit_cloud, secret_sources
 load_runtime_environment()
 
 from project_paths import FINANCIALS_DIR
@@ -37,8 +33,8 @@ def get_engine(max_steps, _provider_cache_key):
     from core.research import ResearchEngine
     from core.web_search import TavilySearch
 
-    load_runtime_environment()
-    openai_key = os.getenv('OPENAI_API_KEY')
+    resolved = load_runtime_environment()
+    openai_key = resolved.get('OPENAI_API_KEY')
 
     # OpenAI is the preferred synthesis provider when configured. On Cloud,
     # never silently assume the user's Windows localhost Ollama is reachable.
@@ -82,10 +78,13 @@ with st.sidebar:
     st.success('Streamlit Cloud' if status['cloud'] else 'Local / self-hosted')
     st.write('**OpenAI synthesis**')
     st.success('Configured' if status['openai'] else 'Not configured')
+    st.caption(f"Secret source: {secret_sources()['OPENAI_API_KEY']}")
     st.write('**Tavily web search**')
     st.success('Configured' if status['tavily'] else 'Not configured')
+    st.caption(f"Secret source: {secret_sources()['TAVILY_API_KEY']}")
     st.write('**Alpha Vantage financial API**')
     st.success('Configured' if status['alphavantage'] else 'Not configured')
+    st.caption(f"Secret source: {secret_sources()['ALPHAVANTAGE_API_KEY']}")
     st.write('**Synthesis fallback**')
     if status['openai']:
         st.success('OpenAI')
